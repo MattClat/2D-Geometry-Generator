@@ -220,6 +220,7 @@ export function ExportPanel({ design, state, onLoadPreset, onTrim }) {
       format: 'tessellate-cad/preset', version: 1,
       engine: state.engine, seed: state.seed,
       params: state.params, mods: state.mods, fab: state.fab, canvas: state.canvas,
+      brushes: state.brushes || [],
       savedAt: new Date().toISOString(),
     };
     download(`${base}.json`, JSON.stringify(doc, null, 2), 'application/json');
@@ -355,13 +356,23 @@ export function Gallery({ open, onClose, onPick, activeId }) {
     return () => { cancelled = true; };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
   return h('div', { className: 'gallery-scrim', onClick: onClose },
-    h('div', { className: 'gallery', onClick: (e) => e.stopPropagation() },
+    h('div', {
+      className: 'gallery', onClick: (e) => e.stopPropagation(),
+      role: 'dialog', 'aria-modal': true, 'aria-label': 'Showcase gallery',
+    },
       h('header', { className: 'gallery-head' },
         h('h2', null, 'Showcase gallery'),
         h('p', null, 'One click to a complete, production-ready starting point.'),
-        h('button', { className: 'gallery-x', onClick: onClose, type: 'button' }, '×'),
+        h('button', { className: 'gallery-x', onClick: onClose, type: 'button', 'aria-label': 'Close gallery', autoFocus: true }, '×'),
       ),
       h('div', { className: 'gallery-grid' },
         PRESETS.map((p) => h('button', {

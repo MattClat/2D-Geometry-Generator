@@ -320,34 +320,65 @@ export function extrudeShapes(shapes, thickness, opts = {}) {
     normals.push(n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2]);
   };
 
+  const ringArea = (r) => {
+    let A = 0;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) A += r[j][0] * r[i][1] - r[i][0] * r[j][1];
+    return A / 2;
+  };
+  const clean = (r) => {
+    const out = [];
+    for (const p of r) {
+      const q = out[out.length - 1];
+      if (!q || q[0] !== p[0] || q[1] !== p[1]) out.push(p);
+    }
+    while (out.length > 1 && out[0][0] === out[out.length - 1][0] && out[0][1] === out[out.length - 1][1]) out.pop();
+    return out;
+  };
   for (const s of shapes) {
     if (!s.outer || s.outer.length < 3) continue;
+    // Outer CCW, holes CW: the wall normals below assume material on the left.
+    let outer = clean(s.outer);
+    if (outer.length < 3 || Math.abs(ringArea(outer)) < 1e-9) continue;
+    if (ringArea(outer) < 0) outer = outer.slice().reverse();
+    const holes = [];
+    for (const h of s.holes || []) {
+      let r = clean(h);
+      if (r.length < 3 || Math.abs(ringArea(r)) < 1e-9) continue;
+      if (ringArea(r) > 0) r = r.slice().reverse();
+      holes.push(r);
+    }
     let tri;
     try {
-      tri = triangulate(s.outer, s.holes || []);
+      tri = triangulate(outer, holes);
     } catch (e) { continue; }
     const { verts, tris } = tri;
+    const capEdges = new Map();   // "x,y|x,y" directed edge -> [p, q]
+    const k2 = (p) => p[0] + ',' + p[1];
     for (let i = 0; i < tris.length; i += 3) {
       const a = verts[tris[i]], b = verts[tris[i + 1]], c = verts[tris[i + 2]];
       if (!a || !b || !c) continue;
-      // top face (CCW when seen from +Z)
-      pushTri([a[0], a[1], z1], [b[0], b[1], z1], [c[0], c[1], z1], [0, 0, 1]);
-      // bottom face (reversed)
-      pushTri([c[0], c[1], z0], [b[0], b[1], z0], [a[0], a[1], z0], [0, 0, -1]);
+      const cr = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+      if (Math.abs(cr) < 1e-12) continue;         // zero-area sliver
+      // orient every cap triangle explicitly rather than trusting earcut's order
+      const [p, q] = cr > 0 ? [b, c] : [c, b];
+      pushTri([a[0], a[1], z1], [p[0], p[1], z1], [q[0], q[1], z1], [0, 0, 1]);
+      pushTri([q[0], q[1], z0], [p[0], p[1], z0], [a[0], a[1], z0], [0, 0, -1]);
+      for (const [u, v] of [[a, p], [p, q], [q, a]]) capEdges.set(k2(u) + '|' + k2(v), [u, v]);
     }
-    // side walls for every ring
-    const rings = [s.outer, ...(s.holes || [])];
-    rings.forEach((ring, ri) => {
-      const n = ring.length;
-      for (let i = 0; i < n; i++) {
-        const p = ring[i], q = ring[(i + 1) % n];
-        const dx = q[0] - p[0], dy = q[1] - p[1];
-        const l = Math.hypot(dx, dy) || 1;
-        const nrm = [dy / l, -dx / l, 0];
-        pushTri([p[0], p[1], z0], [q[0], q[1], z0], [q[0], q[1], z1], nrm);
-        pushTri([p[0], p[1], z0], [q[0], q[1], z1], [p[0], p[1], z1], nrm);
-      }
-    });
+    // Side walls come from the cap's own boundary — every directed edge whose
+    // twin is missing. Walls built from the input rings instead disagree with
+    // the cap wherever earcut drops a collinear vertex or a hole touches the
+    // outline at a point, leaving T-junctions and an STL that is not
+    // watertight.
+    for (const [key, [p, q]] of capEdges) {
+      const bar = key.indexOf('|');
+      if (capEdges.has(key.slice(bar + 1) + '|' + key.slice(0, bar))) continue;
+      const dx = q[0] - p[0], dy = q[1] - p[1];
+      const l = Math.hypot(dx, dy) || 1;
+      const nrm = [dy / l, -dx / l, 0];
+      pushTri([p[0], p[1], z0], [q[0], q[1], z0], [q[0], q[1], z1], nrm);
+      pushTri([p[0], p[1], z0], [q[0], q[1], z1], [p[0], p[1], z1], nrm);
+    }
   }
   return {
     positions: new Float32Array(positions),

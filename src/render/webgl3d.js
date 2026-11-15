@@ -190,36 +190,66 @@ function compile(gl, vsrc, fsrc) {
 export class Viewer3D {
   constructor(canvas) {
     this.canvas = canvas;
-    const opts = { antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' };
-    this.gl = canvas.getContext('webgl', opts) || canvas.getContext('experimental-webgl', opts);
-    if (!this.gl) { this.failed = 'WebGL unavailable'; return; }
-    const gl = this.gl;
-    try {
-      this.prog = compile(gl, VERT, FRAG);
-      this.ground = compile(gl, GROUND_VERT, GROUND_FRAG);
-    } catch (e) { this.failed = e.message; return; }
-
-    this.posBuf = gl.createBuffer();
-    this.nrmBuf = gl.createBuffer();
-    this.groundBuf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.groundBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
-
     this.count = 0;
     this.radius = 220;
     this.theta = -Math.PI / 2 + 0.55;
     this.phi = 0.95;
     this.dist = 520;
     this.target = [0, 0, 0];
-    this.material = MATERIALS[0];
-    this.thickness = 3;
-    this.autoRotate = false;
+    this._material = MATERIALS[0];
+    this._thickness = 3;
+    this._autoRotate = false;
     this.bg = [0.055, 0.058, 0.07];
     this._t = 0;
+    this.dirty = true;
+    this.lastMesh = null;
+
+    // A browser may drop the GL context at any time (GPU reset, too many
+    // contexts, a backgrounded tab). Without these handlers the viewport just
+    // goes black for good.
+    this._onLost = (e) => { e.preventDefault(); this.lost = true; };
+    this._onRestored = () => {
+      this.lost = false;
+      this._init();
+      if (this.lastMesh) this.setMesh(this.lastMesh);
+      this.dirty = true;
+    };
+    canvas.addEventListener('webglcontextlost', this._onLost, false);
+    canvas.addEventListener('webglcontextrestored', this._onRestored, false);
+    this._init();
   }
 
+  _init() {
+    const canvas = this.canvas;
+    const opts = { antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' };
+    this.gl = this.gl || canvas.getContext('webgl', opts) || canvas.getContext('experimental-webgl', opts);
+    if (!this.gl) { this.failed = 'WebGL unavailable'; return; }
+    const gl = this.gl;
+    try {
+      this.prog = compile(gl, VERT, FRAG);
+      this.ground = compile(gl, GROUND_VERT, GROUND_FRAG);
+    } catch (e) { this.failed = e.message; return; }
+    this.failed = null;
+    this.posBuf = gl.createBuffer();
+    this.nrmBuf = gl.createBuffer();
+    this.groundBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.groundBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+  }
+
+  // Changing any of these needs a redraw; the render loop skips frames
+  // otherwise, so an idle viewport costs nothing.
+  get material() { return this._material; }
+  set material(m) { if (m !== this._material) { this._material = m; this.dirty = true; } }
+  get thickness() { return this._thickness; }
+  set thickness(t) { if (t !== this._thickness) { this._thickness = t; this.dirty = true; } }
+  get autoRotate() { return this._autoRotate; }
+  set autoRotate(v) { this._autoRotate = !!v; this.dirty = true; }
+
   setMesh(mesh, bbox) {
-    if (!this.gl || this.failed) return;
+    this.lastMesh = mesh;
+    this.dirty = true;
+    if (!this.gl || this.failed || this.lost) return;
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
     gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW);
@@ -233,13 +263,15 @@ export class Viewer3D {
     }
   }
 
-  frameCamera() { this.dist = this.radius * 2.9; }
+  frameCamera() { this.dist = this.radius * 2.9; this.dirty = true; }
 
   orbit(dx, dy) {
+    this.dirty = true;
     this.theta -= dx * 0.008;
     this.phi = Math.max(0.06, Math.min(Math.PI - 0.06, this.phi - dy * 0.008));
   }
   pan(dx, dy) {
+    this.dirty = true;
     const s = this.dist * 0.0016;
     const right = [Math.cos(this.theta + Math.PI / 2), Math.sin(this.theta + Math.PI / 2), 0];
     this.target[0] -= right[0] * dx * s;
@@ -247,21 +279,24 @@ export class Viewer3D {
     this.target[2] += dy * s;
   }
   zoom(delta) {
+    this.dirty = true;
     this.dist = Math.max(this.radius * 0.4, Math.min(this.radius * 14, this.dist * Math.exp(delta * 0.0014)));
   }
 
   render(dtMs = 16) {
     const gl = this.gl;
-    if (!gl || this.failed) return;
-    this._t += dtMs / 1000;
-    if (this.autoRotate) this.theta += dtMs * 0.00018;
-
+    if (!gl || this.failed || this.lost) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
     const hgt = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
     if (this.canvas.width !== w || this.canvas.height !== hgt) {
       this.canvas.width = w; this.canvas.height = hgt;
+      this.dirty = true;
     }
+    if (!this.dirty && !this.autoRotate) return;
+    this.dirty = false;
+    this._t += dtMs / 1000;
+    if (this.autoRotate) this.theta += dtMs * 0.00018;
     gl.viewport(0, 0, w, hgt);
     gl.clearColor(this.bg[0], this.bg[1], this.bg[2], 1);
     gl.enable(gl.DEPTH_TEST);
@@ -323,10 +358,18 @@ export class Viewer3D {
   }
 
   dispose() {
+    this.canvas.removeEventListener('webglcontextlost', this._onLost, false);
+    this.canvas.removeEventListener('webglcontextrestored', this._onRestored, false);
     const gl = this.gl;
     if (!gl) return;
     for (const b of [this.posBuf, this.nrmBuf, this.groundBuf]) if (b) gl.deleteBuffer(b);
     if (this.prog) gl.deleteProgram(this.prog);
     if (this.ground) gl.deleteProgram(this.ground);
+    // Browsers cap live WebGL contexts (~16); release ours immediately rather
+    // than waiting for garbage collection, or toggling layouts a few times
+    // starts evicting the oldest context.
+    const ext = gl.getExtension('WEBGL_lose_context');
+    if (ext) ext.loseContext();
+    this.gl = null;
   }
 }

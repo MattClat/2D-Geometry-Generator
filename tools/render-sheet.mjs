@@ -1,11 +1,10 @@
 /* Renders every preset (and every engine default) to a PNG contact sheet
    so the geometry can be eyeballed without a browser. */
-// sharp and playwright are only needed by the preview/screenshot tooling, not
-// by the app or the geometry tests. They were installed globally in the
-// environment this was built in; after `npm i -D sharp playwright` change
-// this to the bare specifier 'sharp' / 'playwright'.
+// sharp is a dev dependency, only needed by the preview tooling and this
+// render test — not by the app or the geometry tests.
 import { writeFileSync, mkdirSync } from 'node:fs';
-import sharp from '/home/claude/.npm-global/lib/node_modules/sharp/lib/index.js';
+import sharp from 'sharp';
+import { fileURLToPath } from 'node:url';
 import { buildDesign } from '../src/engine/build.js';
 import { PRESETS } from '../src/engine/presets.js';
 import { ENGINES, defaultParams } from '../src/engine/patterns/index.js';
@@ -15,7 +14,7 @@ import { exportSVG } from '../src/engine/exporters/svg.js';
 
 // Resolved from this file, not hardcoded, so the project still works
 // wherever it is unzipped.
-const OUT = new URL('../preview/gallery/', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('../preview/gallery/', import.meta.url));
 mkdirSync(OUT, { recursive: true });
 
 const which = process.argv[2] || 'presets';

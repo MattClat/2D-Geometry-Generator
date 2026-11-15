@@ -11,16 +11,24 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const NM = '/home/claude/.npm-global/lib/node_modules';
 
 /* ---------------- 1. React ---------------- */
+// Resolved from this project's node_modules (`npm install`), the way Node
+// would. scheduler is react-dom's own dependency, so resolve it from there —
+// npm may hoist it or nest it.
+const req = createRequire(resolve(ROOT, 'package.json'));
+const pkgDir = (r, name) => dirname(r.resolve(`${name}/package.json`));
+const reactDir = pkgDir(req, 'react');
+const reactDomDir = pkgDir(req, 'react-dom');
+const schedulerDir = pkgDir(createRequire(resolve(reactDomDir, 'package.json')), 'scheduler');
 const cjs = [
-  ['scheduler', `${NM}/react-dom/node_modules/scheduler/cjs/scheduler.production.js`],
-  ['react', `${NM}/react/cjs/react.production.js`],
-  ['react-dom', `${NM}/react-dom/cjs/react-dom.production.js`],
-  ['react-dom/client', `${NM}/react-dom/cjs/react-dom-client.production.js`],
+  ['scheduler', resolve(schedulerDir, 'cjs/scheduler.production.js')],
+  ['react', resolve(reactDir, 'cjs/react.production.js')],
+  ['react-dom', resolve(reactDomDir, 'cjs/react-dom.production.js')],
+  ['react-dom/client', resolve(reactDomDir, 'cjs/react-dom-client.production.js')],
 ];
 
 function reactBundle() {

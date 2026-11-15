@@ -107,6 +107,14 @@ function walkAbout(pts, c) {
   return { total, maxStep, median, reversed };
 }
 
+/**
+ * How far a curve may bow away from the polyline it replaces. Engine curves
+ * are flattened at about this chord error, so a true arc through their
+ * vertices is the *intended* shape; anything coarser is a real polygon.
+ */
+const FLATTEN_ALLOWANCE = 0.12;
+const sagitta = (r, step) => r * (1 - Math.cos(step / 2));
+
 /** Largest distance from any point to the circle. */
 function circleError(pts, C) {
   let e = 0;
@@ -158,6 +166,10 @@ function tryArc(pts, i, j, tol, maxStep) {
   if (circleError(run, C) > tol) return null;
   const wk = walkAbout(run, C.c);
   if (wk.reversed || wk.maxStep > maxStep) return null;
+  // The vertices may sit on the circle while the chords between them do not:
+  // a coarse polygon's edges bow inward from the arc by the sagitta. Cap it,
+  // or a 16-gon becomes a circle 0.4 mm proud of every edge.
+  if (sagitta(C.r, wk.maxStep) > Math.max(tol, FLATTEN_ALLOWANCE)) return null;
   // Steps must be *uniform*, not merely small.
   //
   // A flattening lays vertices down at a near-constant angular pitch, so a run
@@ -199,6 +211,12 @@ function longestRun(pts, i, last, test, minSpan = 2) {
     good = r; goodJ = j;
     step *= 2;
     j = i + step;
+  }
+  // The doubling overshot `last` without ever testing it: bisection below
+  // only probes strictly between lo and hi, so check the end point directly.
+  if (j > last && goodJ >= 0 && goodJ < last) {
+    const r = test(i, last);
+    if (r) return { seg: r, j: last };
   }
   let lo = goodJ > 0 ? goodJ : i + minSpan - 1;
   let hi = Math.min(last, j);
@@ -395,7 +413,9 @@ export function fitPath(ptsIn, closed, opts = {}) {
 
   // strip a repeated closing vertex; `closed` already carries that information
   let pts = ptsIn;
-  if (pts.length > 2) {
+  // Only a closed contour may drop its repeated end point; an open path whose
+  // ends happen to meet still needs that last segment.
+  if (closed && pts.length > 2) {
     const a = pts[0], b = pts[pts.length - 1];
     if (Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9) pts = pts.slice(0, -1);
   }
@@ -407,7 +427,8 @@ export function fitPath(ptsIn, closed, opts = {}) {
     const loop = pts.concat([pts[0]]);
     if (C && circleError(loop, C) <= tol) {
       const wk = walkAbout(loop, C.c);
-      if (!wk.reversed && wk.maxStep <= maxStep && Math.abs(Math.abs(wk.total) - TAU) < 1e-6) {
+      if (!wk.reversed && wk.maxStep <= maxStep && Math.abs(Math.abs(wk.total) - TAU) < 1e-6
+        && sagitta(C.r, wk.maxStep) <= Math.max(tol, FLATTEN_ALLOWANCE)) {
         return { circle: C };
       }
     }

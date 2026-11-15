@@ -3,10 +3,13 @@
  * =======================================================================*/
 import h, { cx, useState, useRef, useEffect, useCallback } from '../lib/h.js';
 
-export function Button({ children, onClick, variant = 'ghost', size = 'md', title, disabled, active, className }) {
+export function Button({ children, onClick, variant = 'ghost', size = 'md', title, disabled, active, className, ariaLabel }) {
   return h('button', {
     className: cx('btn', `btn-${variant}`, `btn-${size}`, active && 'is-active', className),
     onClick, title, disabled, type: 'button',
+    // icon-only buttons have a glyph for a label; give screen readers the title
+    'aria-label': ariaLabel || title || undefined,
+    'aria-pressed': active === undefined ? undefined : !!active,
   }, children);
 }
 
@@ -34,12 +37,15 @@ export function Slider({ label, value, min, max, step = 0.01, unit, int, onChang
         },
         onKeyDown: (e) => { if (e.key === 'Enter') e.target.blur(); },
         disabled,
+        'aria-label': `${label} value`,
+        inputMode: 'decimal',
       }),
       unit ? h('span', { className: 'ctl-unit' }, unit) : null,
     ),
     h('input', {
       type: 'range', className: 'ctl-range', min, max, step, value, disabled,
       style: { '--pct': pct + '%' },
+      'aria-label': label,
       onChange: (e) => onChange(parseFloat(e.target.value)),
     }),
   );
@@ -54,6 +60,7 @@ export function Toggle({ label, value, onChange, disabled, hint }) {
       onClick: () => !disabled && onChange(!value),
       role: 'switch',
       'aria-checked': !!value,
+      'aria-label': label,
       disabled,
     }, h('span', { className: 'switch-knob' })),
   );
@@ -65,6 +72,7 @@ export function Select({ label, value, options, onChange, disabled }) {
     h('div', { className: 'select-wrap' },
       h('select', {
         className: 'select', value, disabled,
+        'aria-label': label || undefined,
         onChange: (e) => onChange(e.target.value),
       }, options.map((o) => h('option', { key: o.v, value: o.v }, o.label))),
       h('span', { className: 'select-caret' }, '▾'),

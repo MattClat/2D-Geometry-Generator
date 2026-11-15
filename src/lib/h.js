@@ -17,7 +17,11 @@ export const {
 
 /**
  * h(tag, props?, ...children)
- * Children may be nested arrays; nulls are dropped.
+ * Children may be nested arrays, which are flattened. Top-level null / false
+ * children are kept as empty slots: React matches children by position, so
+ * dropping `cond ? a : null` would shift every later sibling down one place
+ * and remount it — which is how toggling the 2D view used to tear down and
+ * recreate the 3D viewport's WebGL context.
  */
 export function h(tag, props, ...children) {
   if (props !== null && props !== undefined && (typeof props !== 'object' || Array.isArray(props) || props.$$typeof)) {
@@ -25,12 +29,15 @@ export function h(tag, props, ...children) {
     props = null;
   }
   const flat = [];
-  const walk = (c) => {
-    if (c === null || c === undefined || c === false || c === true) return;
-    if (Array.isArray(c)) { c.forEach(walk); return; }
+  const walk = (c, top) => {
+    if (c === null || c === undefined || c === false || c === true) {
+      if (top) flat.push(null);
+      return;
+    }
+    if (Array.isArray(c)) { c.forEach((x) => walk(x, false)); return; }
     flat.push(c);
   };
-  children.forEach(walk);
+  children.forEach((c) => walk(c, true));
   return React.createElement(tag, props, ...flat);
 }
 

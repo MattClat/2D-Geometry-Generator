@@ -19,9 +19,18 @@ export function Viewport2D({ design, opts, onOptsChange, brushMode, brushRadius,
   const [, force] = useState(0);
   const fittedFor = useRef(null);
 
-  const redraw = useCallback(() => {
+  // Latest props live in a ref so one stable, rAF-coalesced redraw serves
+  // every caller. Previously each pointer move changed `cursor`, which
+  // rebuilt `redraw`, which re-ran two effects and re-subscribed the
+  // ResizeObserver (which fires on subscribe) — three full redraws per move.
+  const live = useRef({});
+  live.current = { design, opts, cursor, brushMode, brushRadius };
+  const rafRef = useRef(0);
+  const drawNow = () => {
+    rafRef.current = 0;
     const cv = canvasRef.current;
-    if (!cv || !design) return;
+    const { design: d, opts: o, cursor: c, brushMode: bm, brushRadius: br } = live.current;
+    if (!cv || !d) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = cv.clientWidth, hh = cv.clientHeight;
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(hh * dpr)) {
@@ -30,13 +39,15 @@ export function Viewport2D({ design, opts, onOptsChange, brushMode, brushRadius,
     }
     const v = viewRef.current;
     v.width = w; v.height = hh; v.dpr = dpr;
-    drawDesign(cv.getContext('2d'), design, v, {
-      ...opts,
-      brush: cursor && brushMode !== 'off'
-        ? { show: true, x: cursor[0], y: cursor[1], radius: brushRadius }
-        : null,
+    drawDesign(cv.getContext('2d'), d, v, {
+      ...o,
+      brush: c && bm !== 'off' ? { show: true, x: c[0], y: c[1], radius: br } : null,
     });
-  }, [design, opts, cursor, brushMode, brushRadius]);
+  };
+  const redraw = useCallback(() => {
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(drawNow);
+  }, []);
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
 
   // fit once per new part footprint
   useEffect(() => {
@@ -50,15 +61,33 @@ export function Viewport2D({ design, opts, onOptsChange, brushMode, brushRadius,
       fittedFor.current = key;
     }
     redraw();
-  }, [design, redraw, opts.autoFit]);
+  }, [design, opts, cursor, brushMode, brushRadius]);
 
   useEffect(() => {
     const ro = new ResizeObserver(() => redraw());
     if (wrapRef.current) ro.observe(wrapRef.current);
     return () => ro.disconnect();
-  }, [redraw]);
+  }, []);
 
-  useEffect(() => { redraw(); }, [redraw]);
+  // React attaches wheel listeners as passive, so preventDefault() inside an
+  // onWheel prop is ignored and the page scrolls while zooming. Attach a
+  // native non-passive listener instead.
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return undefined;
+    const onWheel = (ev) => {
+      ev.preventDefault();
+      const v = viewRef.current;
+      const before = toWorld(ev);
+      v.scale = Math.max(0.05, Math.min(80, v.scale * Math.exp(-ev.deltaY * 0.0016)));
+      const after = toWorld(ev);
+      v.cx += before[0] - after[0];
+      v.cy += before[1] - after[1];
+      redraw();
+    };
+    cv.addEventListener('wheel', onWheel, { passive: false });
+    return () => cv.removeEventListener('wheel', onWheel);
+  }, []);
 
   const toWorld = (ev) => {
     const cv = canvasRef.current;
@@ -74,8 +103,9 @@ export function Viewport2D({ design, opts, onOptsChange, brushMode, brushRadius,
     ev.currentTarget.setPointerCapture(ev.pointerId);
     const w = toWorld(ev);
     if (brushMode !== 'off' && ev.button === 0 && !ev.shiftKey) {
-      dragRef.current = { kind: 'brush', last: w, start: w };
-      onBrush({ type: brushMode, x: w[0], y: w[1], radius: brushRadius, strength: brushStrength, dx: 0, dy: 0 });
+      const b = { type: brushMode, x: w[0], y: w[1], radius: brushRadius, strength: brushStrength, dx: 0, dy: 0 };
+      dragRef.current = { kind: 'brush', last: w, start: w, brush: b };
+      onBrush(b);
     } else {
       dragRef.current = { kind: 'pan', sx: ev.clientX, sy: ev.clientY, cx: viewRef.current.cx, cy: viewRef.current.cy };
     }
@@ -92,27 +122,25 @@ export function Viewport2D({ design, opts, onOptsChange, brushMode, brushRadius,
       v.cy = d.cy + (ev.clientY - d.sy) / v.scale;
       redraw();
     } else if (d.kind === 'brush') {
-      onBrush({
+      d.brush = {
         type: brushMode, x: d.start[0], y: d.start[1], radius: brushRadius,
         strength: brushStrength, dx: w[0] - d.start[0], dy: w[1] - d.start[1],
-      });
+      };
+      onBrush(d.brush);
     }
   };
 
+  // Commit the brush that was last *sent*, carried on the drag record — the
+  // parent's copy in state may still be one move behind when pointerup lands.
   const onPointerUp = () => {
-    if (dragRef.current && dragRef.current.kind === 'brush') onCommitBrush();
+    const d = dragRef.current;
     dragRef.current = null;
+    if (d && d.kind === 'brush') onCommitBrush(d.brush);
   };
-
-  const onWheel = (ev) => {
-    ev.preventDefault();
-    const v = viewRef.current;
-    const before = toWorld(ev);
-    v.scale = Math.max(0.05, Math.min(80, v.scale * Math.exp(-ev.deltaY * 0.0016)));
-    const after = toWorld(ev);
-    v.cx += before[0] - after[0];
-    v.cy += before[1] - after[1];
-    redraw();
+  const onPointerCancel = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (d && d.kind === 'brush') onBrush(null);
   };
 
   const zoomFit = () => {
@@ -125,8 +153,11 @@ export function Viewport2D({ design, opts, onOptsChange, brushMode, brushRadius,
     h('canvas', {
       ref: canvasRef,
       className: cx('vp-canvas', brushMode !== 'off' && 'is-brush'),
-      onPointerDown, onPointerMove, onPointerUp, onPointerLeave: () => setCursor(null),
-      onWheel,
+      onPointerDown, onPointerMove, onPointerUp, onPointerCancel,
+      onPointerLeave: () => setCursor(null),
+      onContextMenu: (e) => e.preventDefault(),
+      'aria-label': '2D design view — drag to pan, scroll to zoom',
+      role: 'img',
     }),
     h('div', { className: 'vp-toolbar' },
       h(SegmentedControl, {
@@ -169,6 +200,7 @@ export function Viewport3D({ design, thickness, materialId, onMaterial, autoRota
   const [err, setErr] = useState(null);
   const [tris, setTris] = useState(0);
   const dragRef = useRef(null);
+  const framedFor = useRef(null);
 
   useEffect(() => {
     const v = new Viewer3D(canvasRef.current);
@@ -189,7 +221,10 @@ export function Viewport3D({ design, thickness, materialId, onMaterial, autoRota
     if (!v || !design) return;
     const mesh = extrudeShapes(design.shapes, Math.max(0.2, thickness));
     v.setMesh(mesh, design.bbox);
-    v.frameCamera();
+    // Only reframe when the part's footprint changes; resetting the camera on
+    // every slider tick threw away the user's orbit and zoom.
+    const key = design.bbox.map((n) => Math.round(n)).join(',');
+    if (framedFor.current !== key) { v.frameCamera(); framedFor.current = key; }
     setTris(mesh.triangleCount);
   }, [design, thickness]);
 
@@ -205,6 +240,13 @@ export function Viewport3D({ design, thickness, materialId, onMaterial, autoRota
     ev.currentTarget.setPointerCapture(ev.pointerId);
     dragRef.current = { x: ev.clientX, y: ev.clientY, pan: ev.button === 2 || ev.shiftKey };
   };
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return undefined;
+    const onWheel = (e) => { e.preventDefault(); viewerRef.current && viewerRef.current.zoom(e.deltaY); };
+    cv.addEventListener('wheel', onWheel, { passive: false });
+    return () => cv.removeEventListener('wheel', onWheel);
+  }, []);
   const onPointerMove = (ev) => {
     const d = dragRef.current, v = viewerRef.current;
     if (!d || !v) return;
@@ -218,8 +260,10 @@ export function Viewport3D({ design, thickness, materialId, onMaterial, autoRota
       ref: canvasRef, className: 'vp-canvas',
       onPointerDown, onPointerMove,
       onPointerUp: () => { dragRef.current = null; },
+      onPointerCancel: () => { dragRef.current = null; },
       onContextMenu: (e) => e.preventDefault(),
-      onWheel: (e) => { e.preventDefault(); viewerRef.current && viewerRef.current.zoom(e.deltaY); },
+      'aria-label': '3D material preview — drag to orbit, right-drag to pan, scroll to zoom',
+      role: 'img',
     }),
     err ? h('div', { className: 'vp-error' }, 'WebGL unavailable — ', err) : null,
     h('div', { className: 'vp-toolbar' },

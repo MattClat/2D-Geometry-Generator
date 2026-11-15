@@ -6,9 +6,8 @@ import { Button, IconButton, Slider, Toggle, Select, Section, SegmentedControl, 
 import { EnginePicker, PatternPanel, ModifierPanel, FabricationPanel, FabricationHUD, ExportPanel, Gallery } from './panels.js';
 import { Viewport2D, Viewport3D } from './viewports.js';
 import { buildDesign, DEFAULT_CANVAS } from '../engine/build.js';
-import { defaultParams, ENGINE_BY_ID, sanitizeParams } from '../engine/patterns/index.js';
-import { DEFAULT_MODIFIERS } from '../engine/modifiers.js';
-import { DEFAULT_FAB } from '../engine/fabrication.js';
+import { defaultParams, ENGINE_BY_ID } from '../engine/patterns/index.js';
+import { sanitizeState, sanitizeSeed, isEngineId } from '../engine/sanitize.js';
 import { PRESETS } from '../engine/presets.js';
 import { diceRoll, evolve, randomizeParams } from '../engine/random.js';
 import { THEMES } from '../render/canvas2d.js';
@@ -74,15 +73,28 @@ export function App() {
   });
   const [dismissed, setDismissed] = useState({});
 
-  const setState = useCallback((updater, { snapshot = true } = {}) => {
-    setStateRaw((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      if (snapshot) {
-        setHistory((hst) => [...hst.slice(-40), prev]);
-        setFuture([]);
-      }
-      return next;
-    });
+  // State lives in a ref as well, so mutators compute the next state
+  // directly instead of inside a setState updater. Updaters must be pure
+  // (React may run them twice); pushing undo history from inside one did not.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const gestureRef = useRef({ key: null, t: 0 });
+  const setState = useCallback((updater, { snapshot = true, gesture = null } = {}) => {
+    const prev = stateRef.current;
+    const next = typeof updater === 'function' ? updater(prev) : updater;
+    if (next === prev) return;
+    // A slider drag fires dozens of changes; record one undo step per gesture
+    // (same control, changes less than 700 ms apart) rather than one per tick.
+    const now = Date.now();
+    const g = gestureRef.current;
+    const continuing = gesture && g.key === gesture && now - g.t < 700;
+    gestureRef.current = { key: gesture, t: now };
+    if (snapshot && !continuing) {
+      setHistory((hst) => [...hst.slice(-40), prev]);
+      setFuture([]);
+    }
+    stateRef.current = next;
+    setStateRaw(next);
   }, []);
 
   const liveState = useMemo(
@@ -95,34 +107,28 @@ export function App() {
     [theme, state.fab.sheetW, state.fab.sheetH]);
 
   /* ---------------- mutators ---------------- */
-  const setParam = (k, v) => setState((s) => ({ ...s, params: { ...s.params, [k]: v }, presetId: null }));
-  const setMod = (k, v) => setState((s) => ({ ...s, mods: { ...s.mods, [k]: v }, presetId: null }));
-  const setFab = (k, v) => setState((s) => ({ ...s, fab: { ...s.fab, [k]: v }, presetId: null }));
-  const setCanvas = (c) => setState((s) => ({ ...s, canvas: c }));
+  const setParam = (k, v) => setState((s) => ({ ...s, params: { ...s.params, [k]: v }, presetId: null }), { gesture: 'p:' + k });
+  const setMod = (k, v) => setState((s) => ({ ...s, mods: { ...s.mods, [k]: v }, presetId: null }), { gesture: 'm:' + k });
+  const setFab = (k, v) => setState((s) => ({ ...s, fab: { ...s.fab, [k]: v }, presetId: null }), { gesture: 'f:' + k });
+  const setCanvas = (c) => setState((s) => ({ ...s, canvas: c }), { gesture: 'canvas' });
 
   const pickEngine = (id) => setState((s) => ({
     ...s, engine: id, params: defaultParams(id), presetId: null,
   }));
 
+  // Presets and loaded files go through the same sanitiser as the engine, so
+  // the sliders never show a value the engine would silently clamp.
   const applyPreset = (p) => setState(() => ({
-    engine: p.engine, seed: p.seed,
-    params: { ...p.params }, mods: { ...p.mods }, fab: { ...p.fab },
-    canvas: p.canvas ? { ...p.canvas } : { ...DEFAULT_CANVAS },
+    ...sanitizeState({ ...p, brushes: p.brushes || [] }),
     presetId: p.id || null,
-    brushes: [],
   }));
 
   const loadPresetFile = (doc) => {
-    if (!doc || !doc.engine || !ENGINE_BY_ID[doc.engine]) { alert('Not a Tessellate preset file.'); return; }
-    applyPreset({
-      engine: doc.engine,
-      seed: (doc.seed >>> 0) || 1,
-      params: sanitizeParams(doc.engine, doc.params),
-      mods: { ...DEFAULT_MODIFIERS, ...(doc.mods || {}) },
-      fab: { ...DEFAULT_FAB, ...(doc.fab || {}) },
-      canvas: doc.canvas,
-      id: null,
-    });
+    if (!doc || typeof doc !== 'object' || !isEngineId(doc.engine)) {
+      alert('Not a Tessellate preset file.');
+      return;
+    }
+    applyPreset({ ...doc, id: null });
   };
 
   const roll = (lockEngine) => setState((s) => {
@@ -132,35 +138,61 @@ export function App() {
 
   const doEvolve = (amount) => setState((s) => evolve(s, amount, (Math.random() * 0xffffffff) >>> 0));
 
-  const undo = () => setHistory((hst) => {
-    if (!hst.length) return hst;
-    const prev = hst[hst.length - 1];
-    setFuture((f) => [state, ...f].slice(0, 40));
+  const undo = () => {
+    if (!history.length) return;
+    const prev = history[history.length - 1];
+    setFuture((f) => [stateRef.current, ...f].slice(0, 40));
+    setHistory(history.slice(0, -1));
+    gestureRef.current = { key: null, t: 0 };
+    stateRef.current = prev;
     setStateRaw(prev);
-    return hst.slice(0, -1);
-  });
-  const redo = () => setFuture((f) => {
-    if (!f.length) return f;
-    setHistory((hst) => [...hst, state]);
-    setStateRaw(f[0]);
-    return f.slice(1);
-  });
+  };
+  const redo = () => {
+    if (!future.length) return;
+    const next = future[0];
+    setHistory((hst) => [...hst, stateRef.current]);
+    setFuture(future.slice(1));
+    gestureRef.current = { key: null, t: 0 };
+    stateRef.current = next;
+    setStateRaw(next);
+  };
 
-  const commitBrush = () => {
-    if (!liveBrush) return;
-    const b = liveBrush;
+  // The viewport hands over the exact brush it last drew, so a pointerup that
+  // lands before React re-renders cannot commit a stale one.
+  const commitBrush = (b) => {
     setLiveBrush(null);
+    if (!b) return;
     setState((s) => ({ ...s, brushes: [...s.brushes, b] }));
+  };
+
+  /* ---------------- seed box ---------------- */
+  // Edited as text and committed on Enter / blur: a number input re-parsed on
+  // every keystroke mangled partial entries and silently wrapped big values.
+  const [seedText, setSeedText] = useState(null);
+  const commitSeed = () => {
+    if (seedText === null) return;
+    const v = sanitizeSeed(seedText.trim(), stateRef.current.seed);
+    setSeedText(null);
+    if (v !== stateRef.current.seed) setState((s) => ({ ...s, seed: v }));
   };
 
   /* ---------------- keyboard ---------------- */
   useEffect(() => {
     const onKey = (e) => {
-      if (e.target && /input|select|textarea/i.test(e.target.tagName)) return;
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      const t = e.target;
+      if (t && (/^(input|select|textarea|button)$/i.test(t.tagName) || t.isContentEditable)) return;
+      if (galleryOpen) return;                       // the gallery handles its own keys
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         e.shiftKey ? redo() : undo();
-      } else if (e.key === ' ') { e.preventDefault(); roll(true); }
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'y') {
+        e.preventDefault(); redo(); return;
+      }
+      // plain single-key shortcuts only — leave browser chords like Ctrl+R alone
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      if (e.key === ' ') { e.preventDefault(); roll(true); }
       else if (e.key.toLowerCase() === 'r') roll(false);
       else if (e.key.toLowerCase() === 'e') doEvolve(0.1);
       else if (e.key.toLowerCase() === 'g') setGalleryOpen((v) => !v);
@@ -193,8 +225,15 @@ export function App() {
       h('div', { className: 'topbar-group seed-group' },
         h('label', { className: 'seed-label' }, 'Seed'),
         h('input', {
-          className: 'seed-input', type: 'number', value: state.seed,
-          onChange: (e) => setState((s) => ({ ...s, seed: (parseInt(e.target.value, 10) || 0) >>> 0 })),
+          className: 'seed-input', type: 'text', inputMode: 'numeric',
+          'aria-label': 'Seed', spellCheck: false,
+          value: seedText !== null ? seedText : String(state.seed),
+          onChange: (e) => setSeedText(e.target.value.replace(/[^0-9]/g, '').slice(0, 10)),
+          onBlur: commitSeed,
+          onKeyDown: (e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+            else if (e.key === 'Escape') { setSeedText(null); e.currentTarget.blur(); }
+          },
         }),
         h(IconButton, { title: 'New seed', onClick: () => setState((s) => ({ ...s, seed: (Math.random() * 0xffffffff) >>> 0 })), children: '⟳' }),
       ),
@@ -248,11 +287,13 @@ export function App() {
       h('main', { className: cx('stage', `layout-${layout}`) },
         h('div', { className: 'stage-views' },
           layout !== '3d' ? h(Viewport2D, {
+            key: 'vp2d',
             design, opts: vpOpts, onOptsChange: setVpOpts,
             brushMode, brushRadius, brushStrength,
             onBrush: setLiveBrush, onCommitBrush: commitBrush,
           }) : null,
           layout !== '2d' ? h(Viewport3D, {
+            key: 'vp3d',
             design, thickness: state.fab.thickness, materialId: material,
             onMaterial: setMaterial, autoRotate, onAutoRotate: setAutoRotate,
           }) : null,

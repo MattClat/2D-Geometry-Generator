@@ -338,7 +338,9 @@ function splineEnt(w, owner, layer, s) {
   w.g(72, s.knots.length);
   w.g(73, s.ctrl.length);
   w.g(74, 0);
-  w.g(42, f(1e-7)); w.g(43, f(1e-7));
+  // knot / control-point tolerances; f() rounds to 6 dp, which would print
+  // 0.000000 — a zero tolerance some readers reject
+  w.g(42, '0.0000001'); w.g(43, '0.0000001');
   for (const k of s.knots) w.g(40, f(k));
   for (const c of s.ctrl) { w.g(10, f(c[0])); w.g(20, f(c[1])); w.g(30, f(0)); }
 }

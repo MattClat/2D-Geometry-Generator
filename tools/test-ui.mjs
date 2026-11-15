@@ -1,22 +1,19 @@
 /* Headless browser test: loads the standalone build, drives the UI and
    screenshots each state. Catches console errors and failed exports. */
-// sharp and playwright are only needed by the preview/screenshot tooling, not
-// by the app or the geometry tests. They were installed globally in the
-// environment this was built in; after `npm i -D sharp playwright` change
-// this to the bare specifier 'sharp' / 'playwright'.
-import { chromium } from '/home/claude/.npm-global/lib/node_modules/playwright/index.mjs';
+// playwright is a dev dependency; run `npx playwright install chromium` once.
+import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 // Resolved from this file, not hardcoded, so the project still works
 // wherever it is unzipped.
-const OUT = new URL('../preview/ui/', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('../preview/ui/', import.meta.url));
 mkdirSync(OUT, { recursive: true });
 
 // A dice roll can land on a genuinely enormous design, and those take a few
 // seconds to build in software rendering. Without a raised default the suite
 // fails at random depending on which seeds the clock hands it.
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
+const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
 const page = await browser.newPage({ viewport: { width: 1680, height: 1000 }, deviceScaleFactor: 1 });
 page.setDefaultTimeout(90000);
 

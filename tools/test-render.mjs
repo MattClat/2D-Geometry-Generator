@@ -6,11 +6,9 @@
    flag inverted, a circle drawn against its winding so a hole fills in solid.
    None of those show up in a vertex-to-curve distance check; all of them are
    glaring in a rendered diff. */
-// sharp and playwright are only needed by the preview/screenshot tooling, not
-// by the app or the geometry tests. They were installed globally in the
-// environment this was built in; after `npm i -D sharp playwright` change
-// this to the bare specifier 'sharp' / 'playwright'.
-import sharp from '/home/claude/.npm-global/lib/node_modules/sharp/lib/index.js';
+// sharp is a dev dependency, only needed by the preview tooling and this
+// render test — not by the app or the geometry tests.
+import sharp from 'sharp';
 import { buildDesign } from '../src/engine/build.js';
 import { PRESETS } from '../src/engine/presets.js';
 import { exportSVG } from '../src/engine/exporters/svg.js';
