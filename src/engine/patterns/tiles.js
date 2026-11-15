@@ -337,9 +337,14 @@ export const herringbone = {
     };
 
     if (P.mode === 'herringbone') {
-      // lattice vectors derived so the two-plank motif tiles the plane exactly
-      const a = [L + W, W];
-      const b = [W - L, W];
+      // Lattice vectors for the L-shaped two-plank motif. `a` steps one plank
+      // width down the staircase, `b` jumps to the next staircase; the cell
+      // |a × b| = 2·L·W is exactly the motif's area, and every plank end lands
+      // flush on its neighbour's side. The old pair ([L+W, W], [W−L, W]) had
+      // the right area but the wrong shape — planks overlapped by ~15 % and
+      // left matching holes, which only vanished for square planks.
+      const a = [W, -W];
+      const b = [L, L];
       const n = Math.ceil(diag / Math.min(L, W)) + 2;
       for (let i = -n; i <= n; i++) {
         for (let j = -n; j <= n; j++) {

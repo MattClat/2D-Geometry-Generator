@@ -513,8 +513,13 @@ export const voronoi = {
         if (!c || c.length < 3) continue;
         const ctr = polygonCentroid(c);
         let poly = c.map((p) => lerp(ctr, p, 1 - P.shrink));
-        poly = offsetPolyline(ensureCCW(poly), -P.wall / 2, true);
-        if (poly.length < 3) continue;
+        // Inset by half the web on each side, so neighbouring islands end up a
+        // full `wall` apart. On a CCW polygon a positive offset is inward — the
+        // web branch below punches its holes the same way. The sign here used
+        // to be negative, which grew every cell into its neighbours and fused
+        // the whole field into one blob that got *bigger* as the web thickened.
+        poly = offsetPolyline(ensureCCW(poly), P.wall / 2, true);
+        if (poly.length < 3 || polygonArea(poly) <= 0) continue;     // collapsed / inverted
         if (P.round > 0) poly = fillet(poly, P.round, true);
         out.push(region(poly, { layer: 'cut' }));
       }

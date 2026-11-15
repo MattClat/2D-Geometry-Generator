@@ -43,8 +43,15 @@ export const kagome = {
       const W = P.strand;
       const gap = Math.max(0, P.gap);
       const nodes = triLattice(w + pitch * 2, h + pitch * 2, pitch);
+      // Cyclic over-under needs a *proper* 3-colouring: touching rings must
+      // never share a colour, or that crossing has no over and no under.
+      // triLattice lays rows out offset ("odd rows shifted half a pitch right"),
+      // so (i, j) are not axial coordinates and (i + 2j) mod 3 repeats a colour
+      // on about one crossing in six. Converting to axial q = i − ⌊j/2⌋, r = j
+      // and colouring by (q − r) mod 3 — the same rule lattice.js uses — moves
+      // every one of the six neighbours by ±1 or ±2, never 0.
       const circles = nodes.map((n, i) => ({
-        c: [n.x, n.y], r, order: (n.i + n.j * 2) % 3, id: i,
+        c: [n.x, n.y], r, order: (((n.i - Math.floor(n.j / 2) - n.j) % 3) + 3) % 3, id: i,
       }));
       // A union has no over and no under. At gap 0 the honest answer is to
       // leave the rings whole and let them merge into one mesh — cutting
@@ -125,7 +132,15 @@ export const kagome = {
     const count = Math.ceil((diag * 2) / P.pitch);
     for (const f of families) {
       for (let i = -count; i <= count; i++) {
-        const o = mul(f.nrm, i * P.pitch);
+        // The third family sits half a pitch off the other two. With all three
+        // on whole multiples of the pitch, nrm2 = nrm1 − nrm0 puts every
+        // crossing of families 0 and 1 exactly on a family-2 strand: each
+        // crossing is a triple point, the cyclic rule cuts something at every
+        // one of them and no strand ever runs over anything. The half shift
+        // opens those points into the small triangles of a true trihexagonal
+        // (kagome) net, so crossings are pairwise and each strand alternates
+        // over, under, over along its length.
+        const o = mul(f.nrm, (i + (f.k === 2 ? 0.5 : 0)) * P.pitch);
         const a = add(o, mul(f.dir, -diag));
         const b = add(o, mul(f.dir, diag));
         lines.push({ f: f.k, dir: f.dir, a, b, idx: i });
