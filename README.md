@@ -1,4 +1,8 @@
-# Tessellate CAD
+# Tessellate CAD — 2D Geometry Generator
+
+[![CI](https://github.com/MattClat/2D-Geometry-Generator/actions/workflows/ci.yml/badge.svg)](https://github.com/MattClat/2D-Geometry-Generator/actions/workflows/ci.yml)
+
+**[▶ Open the live app](https://mattclat.github.io/2D-Geometry-Generator/)** — runs entirely in your browser, nothing to install.
 
 A procedural pattern design studio: a generative art playground on one side, a
 precision vector generator on the other. Every design is a pure function of a
@@ -6,33 +10,53 @@ parameter block and a seed, and every design exports as production-clean
 geometry for laser cutting, plasma cutting, CNC routing, pen plotting and 3D
 printing.
 
+![The studio: 2D CAD view, live 3D material preview and the parameter inspector](docs/images/studio.jpg)
+
+| | |
+| --- | --- |
+| ![Brushed-brass 3D preview](docs/images/material-preview.jpg) | ![Showcase gallery](docs/images/gallery.jpg) |
+
 ---
 
 ## Run it
 
-**Zero install (recommended for a quick look)**
+**In the browser.** The [live app](https://mattclat.github.io/2D-Geometry-Generator/)
+is the same single file described next, served by GitHub Pages.
 
-Open `dist/tessellate-cad.html` by double-clicking it. That single file contains
-the whole application — React, the geometry engine, the WebGL renderer and the
-stylesheet — and works offline with no server, no npm and no internet.
+**Zero install, offline.** Download `dist/tessellate-cad.html` and open it by
+double-clicking. That one file contains the whole application — React, the
+geometry engine, the WebGL renderer and the stylesheet — and works with no
+server, no npm and no internet.
 
-**As a project**
+**As a project** (Node 18.17 or newer)
 
 ```bash
+git clone https://github.com/MattClat/2D-Geometry-Generator.git
+cd 2D-Geometry-Generator
 npm install
 npm run dev          # http://localhost:5173
-npm run build        # dist/ with hashed assets
-npm run build:single # dist/index.html as one self-contained file
+npm run build        # build/ with hashed assets
+npm run build:single # build/index.html as one self-contained file
+npm run bundle       # rebuild dist/tessellate-cad.html (the Pages / offline build)
 ```
 
-Useful extras:
+Tests and tooling:
 
 ```bash
-npm test             # geometry engine, curve fitting and DXF structure
-npm run verify       # trim is region-exact; fitted curves render identically
-npm run bundle       # rebuild dist/tessellate-cad.html without a bundler
-npm run sheet        # render a PNG contact sheet of every preset
+npm test             # geometry engine, curve fitting and DXF structure (no install needed)
+npm run verify       # trim is region-exact; fitted curves render identically (needs sharp)
+npm run test:ui      # drives the real UI in headless Chromium (needs: npx playwright install chromium)
+npm run sheet        # render a PNG contact sheet of every preset into preview/
+npm run samples      # regenerate the example exports in samples/
 ```
+
+### Publishing
+
+Pushing to `main` runs the test suite (`.github/workflows/ci.yml`). Whenever
+`dist/tessellate-cad.html` changes, `.github/workflows/pages.yml` publishes it
+as the site — so after changing the source, run `npm run bundle` and commit
+the rebuilt file. One-time setup: in the repository's **Settings ▸ Pages**, set
+**Source** to **GitHub Actions**.
 
 ---
 
@@ -43,9 +67,12 @@ npm run sheet        # render a PNG contact sheet of every preset
 | `R` | Surprise me — randomise everything |
 | `Space` | Reroll the current engine only |
 | `E` | Evolve ±10% |
-| `G` | Toggle the showcase gallery |
+| `G` | Open the showcase gallery (`Esc` closes it) |
 | `1` `2` `3` | 2D / 3D / split viewport |
-| `⌘Z` `⇧⌘Z` | Undo / redo |
+| `⌘Z` / `Ctrl+Z` | Undo (one step per slider drag) |
+| `⇧⌘Z` / `Ctrl+Y` | Redo |
+
+Shortcuts are ignored while a text box, slider or button has focus.
 
 Scroll to zoom, drag to pan. In the 3D viewport drag to orbit, shift-drag or
 right-drag to pan.
@@ -58,15 +85,17 @@ Everything is a pure pipeline. Same inputs in, byte-identical DXF out.
 
 ```
 engine ▸ symmetry array ▸ deformation fields ▸ canvas brushes ▸ line profile
-       ▸ frame clip ▸ ribbon outlines ▸ kerf offset ▸ integrity
-       ▸ boolean trim ▸ metrics
+       ▸ frame clip ▸ ribbon outlines ▸ boolean trim ▸ kerf offset
+       ▸ integrity (islands, bridging, minimum web) ▸ metrics
 ```
 
 Geometry is represented throughout as *polylines in millimetres, Y-up* (CAD
 convention). Curves are flattened to a chord tolerance up front, which is what
 a machine controller consumes anyway and makes DXF export lossless.
 
-### Pattern engines (14)
+![Contact sheet of every showcase preset](docs/images/presets.jpg)
+
+### Pattern engines (15)
 
 | Group | Engine | What it does |
 | --- | --- | --- |
@@ -268,23 +297,30 @@ each other at one.
 
 ### Fabrication integrity engine
 
-* **Floating-island detection.** The even-odd fill is rasterised and its
-  connected components are labelled; any material component not attached to the
-  main body is flagged in **bright red** and counted in the HUD. That's the
-  fallout that drops through your laser bed.
+* **Floating-island detection.** After the trim every outer contour is one
+  physical piece, so the count is exact: the largest piece is the part and
+  every other one is flagged in **bright red** and counted in the HUD. That's
+  the fallout that drops through your laser bed. With the trim switched off,
+  the fill is rasterised and its connected components labelled instead.
 * **Auto-bridging.** Real *keyhole merges*: two contours are opened at their
   nearest point pair and stitched into one closed loop with a bridge of the
   chosen width. Islands chain outward toward the body over several passes, and
-  every merge is area-validated before it is accepted — so the result is still
-  a single closed polyline with no overlapping double-cuts.
-* **Kerf / tool offset.** Winding is normalised so "left of travel" is always
-  the material side, then every contour is offset outward by half the kerf.
-  Positive values grow material: dial in laser beam width (CO₂ ≈ 0.15 mm,
-  fibre ≈ 0.10 mm), plasma arc width (≈ 1.5 mm) or an endmill diameter.
+  every merge is orientation- and area-validated before it is accepted. A
+  bridge only ever joins an island to the void wall directly around it or to a
+  neighbour sharing that void, and the result is re-trimmed — so the output is
+  still non-overlapping with no double-cuts.
+* **Kerf / tool offset.** Applied to the trimmed contours, whose winding puts
+  material on the left, so every contour — frame included — moves half a kerf
+  away from the material and the result is re-trimmed. Positive values grow
+  material: dial in laser beam width (CO₂ ≈ 0.15 mm, fibre ≈ 0.10 mm), plasma
+  arc width (≈ 1.5 mm) or an endmill diameter. Gaps narrower than the kerf are
+  reported when they close up.
+* **Minimum web.** Flags strips of material narrower than the configured
+  minimum — features that would burn through or snap.
 * **Frames.** Rectangle, rounded rectangle, circle, hexagon, octagon, arch and
-  shield, with a parametric band width, evenly distributed mounting holes and
-  an optional keyhole hanger tab. The pattern is clipped to the frame's inner
-  boundary.
+  shield, fitted to the canvas size, with a parametric band width, evenly
+  distributed mounting holes and an optional keyhole hanger, both kept inside
+  the band. The pattern is clipped to the frame's inner boundary.
 * **Live HUD.** Part bounding box, material area, material yield vs. fallout
   waste, sheet utilisation, island count, contour and vertex counts, and
   whether the output is trimmed or raw.
@@ -296,8 +332,8 @@ each other at one.
 | Format | Notes |
 | --- | --- |
 | **DXF** | `AutoCAD 2000` (AC1015) writes closed `LWPOLYLINE` with bulges, plus `CIRCLE` and `SPLINE`; `R12` (AC1009) writes `POLYLINE`/`VERTEX`/`SEQEND`, bulges included, for older CAM posts. True 1:1 mm (`$INSUNITS = 4`), with layers `0_OUTER_FRAME`, `1_CUT_THROUGH`, `2_SCORE_ENGRAVE`. |
-| **SVG** | One merged compound `<path>` per layer with real `A` arc commands, `mm` document units, hairline stroke or filled even-odd. Layers carry Inkscape group labels. |
-| **STL** | Binary, extruded to the stock thickness from the same triangulated mesh the 3D viewport renders. |
+| **SVG** | One merged compound `<path>` per layer with real `A` arc commands, `mm` document units, hairline stroke or filled (nonzero, or even-odd for engines that use it). Layers carry Inkscape group labels. |
+| **STL** | Binary, extruded to the stock thickness from the same triangulated mesh the 3D viewport renders. Watertight: every piece is a closed, consistently oriented shell. |
 | **JSON** | The full parametric preset — engine, seed, every slider, modifiers and frame. Reproduces byte-identically. |
 
 ### Curve fitting — circles and arcs, not 220-gons
@@ -370,11 +406,12 @@ src/
     triangulate.js    ear clipping with holes + extrusion to a mesh
     modifiers.js      symmetry arrays and deformation fields
     fabrication.js    frames, kerf, connectivity analysis, keyhole bridging, metrics
+    sanitize.js       clamps every input (presets, saved files) to its valid range
     boolean.js        planar arrangement / self-union — the trim
     build.js          the deterministic pipeline
     random.js         harmonious dice roll + evolve
     presets.js        the showcase gallery
-    patterns/         the 14 engines, grouped by family
+    patterns/         the 15 engines, grouped by family
     exporters/        svg.js · dxf.js · stl.js · layers.js
   render/
     canvas2d.js       2D viewport renderer + themes
@@ -383,10 +420,14 @@ src/
   lib/h.js            React element helper
 tools/
   test-engine.mjs     headless correctness suite
+  test-fit.mjs        curve fitting stays within tolerance
+  test-dxf.mjs        DXF structure + geometry round trip
   verify-trim.mjs     proves the trim is region-exact and clean
+  test-render.mjs     fitted SVG renders identically to the polylines
   test-ui.mjs         headless browser test of the real interface
   bundle.mjs          builds the single-file HTML
   render-sheet.mjs    PNG contact sheets
+  make-samples.mjs    regenerates samples/
 ```
 
 Adding an engine means dropping one object into `src/engine/patterns/` — a
@@ -404,7 +445,7 @@ on anything heading for the boolean.
 
 ---
 
-## Two implementation notes
+## Implementation notes
 
 **3D renderer.** The 3D viewport is a purpose-built WebGL renderer
 (`src/render/webgl3d.js`) rather than Three.js: it was written in an
@@ -425,3 +466,11 @@ as a normal Vite plugin — nothing here conflicts with it.
 hyperscript helper instead of JSX. That is deliberate: it lets the exact same
 source files run under Vite, inside the no-build single-file bundle, and in
 node for testing, with no transpiler in the loop.
+
+---
+
+## Licence
+
+Copyright © 2026 MattClat. All rights reserved — see [LICENSE](LICENSE). The
+source is published for viewing; no licence to use, copy, modify or
+redistribute it is granted.

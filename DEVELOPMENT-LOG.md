@@ -234,7 +234,7 @@ preset's DXF went from 204 KB to 28 KB.
   with one long straight edge admits a circle passing within tolerance of every
   vertex while bowing millimetres off the straight edge between two of them. A
   straight circuit trace was becoming a lens; only a rendered pixel diff showed
-  it. (`preview/studies/bug-arc-fit-lens.png`)
+  it. (`docs/images/studies/bug-arc-fit-lens.jpg`)
 - **In SVG, a circle drawn without regard to its winding** stops being a hole
   under the nonzero fill rule and fills in solid.
 
@@ -254,7 +254,7 @@ This turned out to be **three** separate bugs.
   it as an open strand: it never considered the edge from the last point back to
   the first, and stamped every result `closed: false`. The ribbon builder then
   capped both ends, leaving a chord-sized gap at the same angle on every ring.
-  (`preview/studies/bug-ring-seam-gap.png`)
+  (`docs/images/studies/bug-ring-seam-gap.jpg`)
 - **Kagome at 0 mm.** The cut length was `(strand + gap)/2 + strand/2`, so even
   at gap 0 it removed a full strand width more arc than the crossing strand
   covers.
@@ -305,7 +305,80 @@ one connected body, because every trimmed line end butts into the line crossing 
 **One bug:** the first version trimmed half a line weight *past* the crossing
 line, so each trimmed end's round cap poked out the far side. The result was a
 bead threaded onto every crossing in the design.
-(`preview/studies/bug-strapwork-beads.png`)
+(`docs/images/studies/bug-strapwork-beads.jpg`)
+
+---
+
+## Round 8 — review pass and GitHub release prep
+
+A full review of the engine, patterns, exporters and UI before publishing to
+<https://github.com/MattClat/2D-Geometry-Generator>. The biggest finding was
+structural rather than a single bug.
+
+### The pipeline order was wrong
+
+Kerf, winding normalisation, island detection and auto-bridging all ran on the
+*untrimmed*, overlapping contours, and the boolean trim came last. Every one of
+those steps needs to know which side of a contour is material, and that is only
+well defined once overlaps are resolved. Symptoms: kerf grew some ribbons and
+shrank others, the frame was never kerfed at all, and auto-bridging on a
+circle frame could flip the frame into a hole (material 14,391 → 70,331 mm²).
+
+The trim now runs first. Kerf is applied to the clean contours (material is
+always on the left, so every contour moves the same way) and re-trimmed;
+islands are counted exactly — one body per outer contour — instead of by
+raster; bridges are re-trimmed so they cannot clip a neighbour.
+
+### Fixed
+
+- **keyholeMerge** tried all four orientation pairs and kept the closest area
+  match, so "both reversed" could win and flip the host's winding. The host
+  now keeps its winding, the guest is oriented to match, and a bridge may only
+  join an island to its own enclosing void or a sibling in that void.
+- **Shield frame deleted the whole pattern.** Its outline repeated its first
+  vertex; the zero-length edge became a spike in the inset and the clip
+  boundary collapsed. Arch and shield are now ellipses fitted to W × H.
+- **Frame band inset** is a half-plane intersection, so it cannot fold over at
+  corners, and a band wider than the frame is reported.
+- **Mounting holes** larger than the band are clamped; the **hanger** was a
+  bow-tie and is now a real keyhole inside the band.
+- **Minimum web** slider did nothing — the check existed but was never called.
+  Wired up, with wrap-around and concave-corner false positives fixed.
+- **Island detection** missed ring-shaped islands (the probe point sat in the
+  ring's hole).
+- **Trim** could grind for 20–30 s before refusing; it now gives up after 6 s.
+- **STL** was not watertight (walls kept collinear vertices the caps dropped).
+  Walls are now built from the cap's boundary edges: 0 open edges across all
+  presets.
+- **Arc fitting** let a 16-gon become a circle 0.38 mm proud of its edges; a
+  sagitta cap fixes it. Also an off-by-one in the run search, open paths with
+  coincident ends losing a segment, and SPLINE tolerances printing as zero.
+- **Patterns:** herringbone tiling vectors, kagome ring colouring, triaxial
+  offset, Voronoi wall inset, op-art target twist, a `Math.random` that made
+  dice rolls non-reproducible, and seed 0 behaving as seed 1.
+- **Input sanitising:** a new `sanitize.js` clamps every value from presets,
+  saved files and the UI (a hand-edited file could ask for a 5000 × 5000
+  tiling).
+- **UI:** toggling 2D remounted the 3D viewport and leaked a WebGL context;
+  context loss now recovers; the 3D view no longer resets the camera on every
+  slider tick or redraws at 60 fps while idle; wheel zoom no longer scrolls the
+  page; one undo step per slider drag; brushes are saved with the design; the
+  seed box no longer mangles input; shortcuts no longer fire inside controls;
+  the gallery closes on Escape; accessibility labels throughout.
+- **Packaging:** tools no longer hardcode paths from the build machine;
+  React 19 declared to match the bundle; Vite builds to `build/` so it cannot
+  wipe the committed `dist/tessellate-cad.html`; CI and GitHub Pages workflows
+  added; `preview/` is now generated locally and ignored, with README
+  screenshots in `docs/images/`.
+
+### Still open
+
+- Maurer rose resamples its chords rather than using the classical
+  θᵢ = i·d° construction; rose petal phase, golden-spiral continuity and a few
+  other sacred-geometry refinements are noted but unchanged.
+- Circuit-maze terminal pads read as holes in the Circuit preset.
+- The trim still runs on the main thread; a Web Worker would keep the UI
+  responsive on the heaviest designs.
 
 ---
 
@@ -396,7 +469,7 @@ src/
   ui/                     React components (App, panels, viewports, widgets)
   lib/h.js                React element helper
 
-tools/                    the six test suites plus bundle.mjs and render-sheet.mjs
+tools/                    the seven test suites plus bundle.mjs, render-sheet.mjs, make-samples.mjs
 
 samples/                  example exports
   woven-ring-strapwork.dxf/.svg    the Round 7 preset
@@ -404,10 +477,9 @@ samples/                  example exports
   sample-autocad2000-splines.dxf   AC1015 with splines
   sample-r12-arcs.dxf              R12 with bulged vertices
 
-preview/
-  gallery/                contact sheets of every preset and engine
-  ui/                     screenshots of every part of the interface
-  studies/                design studies and bug evidence referenced above
+docs/images/              README screenshots
+
+preview/                  (generated locally by render-sheet / test-ui; not committed)
 ```
 
 ---

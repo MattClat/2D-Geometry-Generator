@@ -1,25 +1,42 @@
 {
-  "name": "tessellate-cad",
+  "name": "2d-geometry-generator",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
-  "description": "Procedural pattern design studio \u2014 generative playground that outputs production-clean SVG, DXF and STL for laser, plasma, CNC router, pen plotter and 3D printing.",
+  "description": "Tessellate CAD — procedural pattern design studio that outputs production-clean SVG, DXF and STL for laser, plasma, CNC router, pen plotter and 3D printing.",
+  "license": "UNLICENSED",
+  "author": "MattClat",
+  "homepage": "https://mattclat.github.io/2D-Geometry-Generator/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MattClat/2D-Geometry-Generator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MattClat/2D-Geometry-Generator/issues"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:single": "cross-env SINGLE=1 vite build",
+    "build:single": "vite build --mode single",
     "preview": "vite preview",
     "bundle": "node tools/bundle.mjs",
     "test": "node tools/test-engine.mjs && node tools/test-fit.mjs && node tools/test-dxf.mjs",
+    "verify": "node tools/verify-trim.mjs && node tools/test-render.mjs",
+    "test:ui": "node tools/test-ui.mjs",
     "sheet": "node tools/render-sheet.mjs presets",
-    "verify": "node tools/verify-trim.mjs && node tools/test-render.mjs"
+    "samples": "node tools/make-samples.mjs"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "^1.50.0",
+    "sharp": "^0.34.0",
     "vite": "^5.4.11",
     "vite-plugin-singlefile": "^2.0.3"
   }

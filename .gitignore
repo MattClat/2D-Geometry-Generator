@@ -1,4 +1,6 @@
 node_modules/
-preview/scratch/
+preview/
+build/
 dist/*.map
 .claude/
+.DS_Store
