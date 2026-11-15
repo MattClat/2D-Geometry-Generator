@@ -60,7 +60,7 @@ function capDensity(engineId, P) {
 }
 
 /** Keep line weight sane relative to the dominant pitch of the engine. */
-function balanceStrokes(engineId, P) {
+function balanceStrokes(engineId, P, rng) {
   const pitchKeys = ['pitch', 'cell', 'density', 'plankW', 'brickH', 'repel'];
   const strokeKeys = ['strand', 'stroke', 'wall'];
   let pitch = null;
@@ -71,7 +71,8 @@ function balanceStrokes(engineId, P) {
     if (P[k] === undefined) continue;
     const schema = eng.params.find((p) => p.key === k);
     if (!schema) continue;
-    const target = pitch * (0.09 + Math.random() * 0.16);
+    // drawn from the seeded stream so the same seed always rolls the same design
+    const target = pitch * (0.09 + rng() * 0.16);
     P[k] = Math.max(schema.min, Math.min(schema.max, Math.min(P[k], target)));
   }
   return P;
@@ -83,7 +84,7 @@ export function randomizeParams(engineId, seed) {
   if (!eng) return {};
   const P = {};
   for (const p of eng.params) P[p.key] = harmoniousValue(p, rng);
-  return balanceStrokes(engineId, capDensity(engineId, P));
+  return balanceStrokes(engineId, capDensity(engineId, P), rng);
 }
 
 export function randomizeModifiers(seed) {

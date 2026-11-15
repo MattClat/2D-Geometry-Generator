@@ -6,7 +6,9 @@
 
 /** Fast, high-quality 32-bit PRNG (mulberry32). */
 export function makeRng(seed) {
-  let a = (seed >>> 0) || 1;
+  // Seed 0 is valid and must differ from seed 1; substitute a fixed non-zero
+  // state rather than collapsing it onto 1.
+  let a = (seed >>> 0) || 0x6d2b79f5;
   const rng = () => {
     a |= 0;
     a = (a + 0x6d2b79f5) | 0;

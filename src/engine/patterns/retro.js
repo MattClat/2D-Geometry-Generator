@@ -321,11 +321,14 @@ export const opart = {
         const r0 = rAt(k - 1), r1 = rAt(k);
         for (let s = 0; s < nS; s++) {
           if ((s + k) & 1) continue;
-          const a0 = (s / nS) * TAU + P.twist * TAU * (r0 / Rmax);
-          const a1 = ((s + 1) / nS) * TAU + P.twist * TAU * (r1 / Rmax);
+          // Each arc is twisted by its *own* radius. Mixing the inner twist
+          // into one end and the outer into the other sheared every cell into
+          // a skewed wedge whose sides no longer met its neighbours.
+          const tw0 = P.twist * TAU * (r0 / Rmax), tw1 = P.twist * TAU * (r1 / Rmax);
+          const a0 = (s / nS) * TAU, a1 = ((s + 1) / nS) * TAU;
           const poly = [
-            ...arcPts(0, 0, r1, a0, a1),
-            ...arcPts(0, 0, r0, a1, a0),
+            ...arcPts(0, 0, r1, a0 + tw1, a1 + tw1),
+            ...arcPts(0, 0, r0, a1 + tw0, a0 + tw0),
           ];
           out.push(region(dedupe(poly), { layer: 'cut' }));
         }
