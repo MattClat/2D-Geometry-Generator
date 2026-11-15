@@ -1,0 +1,26 @@
+{
+  "name": "tessellate-cad",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Procedural pattern design studio \u2014 generative playground that outputs production-clean SVG, DXF and STL for laser, plasma, CNC router, pen plotter and 3D printing.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:single": "cross-env SINGLE=1 vite build",
+    "preview": "vite preview",
+    "bundle": "node tools/bundle.mjs",
+    "test": "node tools/test-engine.mjs && node tools/test-fit.mjs && node tools/test-dxf.mjs",
+    "sheet": "node tools/render-sheet.mjs presets",
+    "verify": "node tools/verify-trim.mjs && node tools/test-render.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11",
+    "vite-plugin-singlefile": "^2.0.3"
+  }
+}
