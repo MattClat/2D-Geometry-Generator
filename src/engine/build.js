@@ -15,14 +15,17 @@ import {
   DEFAULT_MODIFIERS,
 } from './modifiers.js';
 import {
-  buildFrame, kerfCompensate, analyseConnectivity, autoBridge, computeMetrics,
-  minWebViolations, DEFAULT_FAB, depthMap,
+  buildFrame, kerfCompensate, kerfOffsetClean, analyseConnectivity, analyseBodies,
+  autoBridge, computeMetrics, minWebViolations, DEFAULT_FAB, depthMap,
 } from './fabrication.js';
 import {
   ribbon, simplify, simplifyClosed, resample, densify, rectPts, clipPolygonToConvex, clipPolylineToPolygon,
   bboxOfPaths, buildShapeTree, polygonArea, dist, clamp, TAU, region, centerline,
 } from './geom.js';
 import { trimOverlaps, normaliseWindings } from './boolean.js';
+import {
+  sanitizeMods, sanitizeFab, sanitizeCanvas, sanitizeBrushes, sanitizeSeed, isEngineId,
+} from './sanitize.js';
 
 export const DEFAULT_CANVAS = { W: 300, H: 300 };
 
@@ -65,10 +68,24 @@ export function applyBrushes(paths, brushes) {
     }
     return [px, py];
   };
-  return paths.map((p) => ({
-    ...p,
-    pts: (p.pts.length > 1 ? densify(p.pts, 1.6, p.closed) : p.pts).map(warp),
-  }));
+  // Only paths that actually pass through a brush need densifying; doing it
+  // to every path multiplied the vertex count of a whole dense tiling for the
+  // sake of one small ripple, bypassing the detail budget.
+  const touches = (pts) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const q of pts) {
+      if (q[0] < x0) x0 = q[0];
+      if (q[1] < y0) y0 = q[1];
+      if (q[0] > x1) x1 = q[0];
+      if (q[1] > y1) y1 = q[1];
+    }
+    return brushes.some((b) => b.x + b.radius >= x0 && b.x - b.radius <= x1
+      && b.y + b.radius >= y0 && b.y - b.radius <= y1);
+  };
+  return paths.map((p) => {
+    if (p.pts.length < 2 || !touches(p.pts)) return p;
+    return { ...p, pts: densify(p.pts, 1.6, p.closed).map(warp) };
+  });
 }
 
 const PATH_BUDGET = 26000;
@@ -79,16 +96,19 @@ const VERTEX_BUDGET = 700000;
 
 export function buildDesign(state) {
   const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  const W = state.canvas?.W ?? DEFAULT_CANVAS.W;
-  const H = state.canvas?.H ?? DEFAULT_CANVAS.H;
-  const eng = ENGINE_BY_ID[state.engine];
   const warnings = [];
-  if (!eng) return emptyResult(W, H, ['Unknown engine: ' + state.engine]);
-
-  const mods = { ...DEFAULT_MODIFIERS, ...(state.mods || {}) };
-  const fab = { ...DEFAULT_FAB, ...(state.fab || {}) };
+  if (!state || !isEngineId(state.engine)) {
+    const c = sanitizeCanvas(state && state.canvas);
+    return emptyResult(c.W, c.H, ['Unknown engine: ' + (state && state.engine)]);
+  }
+  // Every numeric input is clamped to its slider range here, so a hand-edited
+  // preset or an imported file can never ask for a 5000 x 5000 tiling.
+  const { W, H } = sanitizeCanvas(state.canvas);
+  const eng = ENGINE_BY_ID[state.engine];
+  const mods = { ...DEFAULT_MODIFIERS, ...sanitizeMods(state.mods) };
+  const fab = { ...DEFAULT_FAB, ...sanitizeFab(state.fab) };
   const P = sanitizeParams(state.engine, state.params);
-  const seed = state.seed >>> 0;
+  const seed = sanitizeSeed(state.seed);
   const rng = makeRng(seed);
   const noise = makeNoise(seed);
   const fillRule = engineFillRule(state.engine);
@@ -147,7 +167,7 @@ export function buildDesign(state) {
     const step = Math.max(base, total / VERTEX_BUDGET);
     paths = applyDeformation(paths, deform, step);
   }
-  paths = applyBrushes(paths, state.brushes);
+  paths = applyBrushes(paths, sanitizeBrushes(state.brushes));
 
   /* 5 ▸ line weight & corner profile --------------------------------- */
   paths = applyProfile(paths, mods);
@@ -226,18 +246,14 @@ export function buildDesign(state) {
     cutLoops.push(L);
   }
 
-  /* 9 ▸ kerf / tool offset -------------------------------------------- */
-  if (Math.abs(fab.kerf) > 1e-4) cutLoops = kerfCompensate(cutLoops, fab.kerf);
-
-  /* 10 ▸ frame geometry ------------------------------------------------ */
-  // Simplify the frame with the *same* tolerance as the pattern. The pattern
-  // is clipped to the frame's inner boundary, so the two share vertices
-  // exactly — decimating only one of them would leave two nearly-coincident
-  // contours with opposite windings, which is numerically explosive.
+  /* 9 ▸ frame geometry ------------------------------------------------- */
+  // The frame is clipped against exactly like the pattern, so the two share
+  // vertices on the inner boundary. Neither is decimated from here on.
+  for (const w of frame.warnings || []) warnings.push(w);
   const frameLoops = frame.paths.map((p) => ({ ...p, closed: true, kind: 'region' }));
   let allLoops = frameLoops.concat(cutLoops);
 
-  /* 10b ▸ winding normalisation --------------------------------------- */
+  /* 10 ▸ winding normalisation ----------------------------------------- */
   // Even nesting depth -> CCW (adds material), odd -> CW (cuts a hole). With
   // that in place the NONZERO rule governs everywhere: overlapping ribbons
   // merge into one body instead of cancelling, nested rings still cut holes.
@@ -245,12 +261,76 @@ export function buildDesign(state) {
     allLoops = normaliseWindings(allLoops, depthMap(allLoops));
   }
 
-  /* 11 ▸ structural integrity ------------------------------------------ */
+  /* 11 ▸ trim: resolve every overlap into clean, non-overlapping contours */
+  // Trim comes first: kerf, island detection and bridging all need to know
+  // which side of each contour is material, and that is only well defined once
+  // overlapping ribbons have been merged into clean outlines.
+  const trimOpts = {
+    rule: fillRule,
+    eps: 1e-3,
+    simplifyTol: 0,
+    // keeps the interactive rebuild responsive; very dense fields fall back
+    // to raw contours with a visible warning rather than stalling the UI
+    maxSegments: 140000,
+    maxMs: 6000,
+    minArea: Math.max(1e-4, tol * tol * 4),
+  };
+  let trimStats = null;
+  let clean = false;
+  if (fab.trim && allLoops.length) {
+    const res = trimOverlaps(allLoops, trimOpts);
+    trimStats = res.stats;
+    if (res.loops) {
+      allLoops = res.loops;
+      clean = true;
+    } else {
+      warnings.push(
+        res.stats.timedOut
+          ? 'Trim skipped — resolving this many overlaps would take too long. Reduce tiling density, the symmetry order or the line count.'
+          : res.stats.torn
+          ? 'Trim skipped — too many lines meet at the same points for the trim to resolve reliably. Nudge the line width, the symmetry order or the radius slightly.'
+          : res.stats.splits
+            ? `Trim skipped — this figure self-crosses ${res.stats.splits.toLocaleString()} times, past the safe limit. Lower the symmetry order or the sample step.`
+            : `Trim skipped — ${res.stats.segments.toLocaleString()} segments exceeds the ${res.stats.limit.toLocaleString()} limit. Reduce tiling density or feature count.`,
+      );
+    }
+  }
+
+  /* 12 ▸ kerf / tool offset -------------------------------------------- */
+  if (Math.abs(fab.kerf) > 1e-4 && allLoops.length) {
+    if (clean) {
+      const census = (Ls) => {
+        let solids = 0, holes = 0;
+        for (const L of Ls) if (polygonArea(L.pts) > 0) solids++; else holes++;
+        return [solids, holes];
+      };
+      const [s0, h0] = census(allLoops);
+      allLoops = kerfOffsetClean(allLoops, fab.kerf);
+      // Growing solids by half a kerf can make neighbours touch; re-trim so
+      // they merge instead of overlapping.
+      const res = trimOverlaps(allLoops, { ...trimOpts, rule: 'nonzero' });
+      if (res.loops) {
+        allLoops = res.loops;
+        const [s1, h1] = census(allLoops);
+        const lost = Math.max(0, s0 - s1) + Math.max(0, h0 - h1);
+        if (lost > 0) {
+          warnings.push(`A ${fab.kerf} mm kerf is wider than some gaps or features in this design — ${lost} contour${lost === 1 ? '' : 's'} closed up or merged. Widen the gaps or reduce the kerf.`);
+        }
+      }
+      else warnings.push('Kerf offset made some contours overlap and they could not be re-trimmed.');
+    } else {
+      allLoops = kerfCompensate(allLoops, fab.kerf);
+      warnings.push('Kerf compensation is approximate while contours overlap — turn on Trim for an exact offset.');
+    }
+  }
+
+  /* 13 ▸ structural integrity ------------------------------------------ */
   const bbox = bboxOfPaths(allLoops.length ? allLoops : [{ pts: rectPts(-W / 2, -H / 2, W, H) }]);
+  const analyse = (L) => (clean ? analyseBodies(L) : analyseConnectivity(L, bbox, 420, fillRule));
   let analysis = null;
   let bridgeReport = { bridged: 0, failed: 0 };
   if (allLoops.length && allLoops.length < 9000) {
-    analysis = analyseConnectivity(allLoops, bbox, 420, fillRule);
+    analysis = analyse(allLoops);
     if (fab.autoBridge && analysis.floating.size) {
       // Several passes: each one lets fallout clusters chain a little further
       // outward until they reach the frame or the main body.
@@ -260,47 +340,32 @@ export function buildDesign(state) {
         if (!res.bridged) break;
         allLoops = res.loops;
         bridgeReport.bridged += res.bridged;
-        bridgeReport.failed = res.failed;
-        analysis = analyseConnectivity(allLoops, bbox, 420, fillRule);
+        if (clean) {
+          // A bridge can clip a neighbouring contour on its way across.
+          // Re-trim so the output stays strictly non-overlapping.
+          const rt = trimOverlaps(allLoops, { ...trimOpts, rule: 'nonzero' });
+          if (rt.loops) allLoops = rt.loops;
+        }
+        analysis = analyse(allLoops);
       }
     }
   } else if (allLoops.length) {
     warnings.push('Connectivity check skipped — too many contours. Simplify the design to re-enable island detection.');
   }
 
-  /* 11b ▸ trim: resolve every overlap into clean, non-overlapping contours */
-  let trimStats = null;
-  if (fab.trim && allLoops.length) {
-    const res = trimOverlaps(allLoops, {
-      rule: fillRule,
-      eps: 1e-3,
-      simplifyTol: 0,
-      // keeps the interactive rebuild responsive; very dense fields fall back
-      // to raw contours with a visible warning rather than stalling the UI
-      maxSegments: 140000,
-      minArea: Math.max(1e-4, tol * tol * 4),
-    });
-    if (res.loops) {
-      // No decimation before or after: the trim relies on contours that touch
-      // sharing their vertices exactly, and simplifying either side of it
-      // independently pulls those shared vertices apart. Its output is already
-      // far smaller than its input, so there is nothing to gain.
-      allLoops = res.loops;
-      trimStats = res.stats;
-      if (analysis) analysis = analyseConnectivity(allLoops, bbox, 420, 'nonzero');
-    } else {
-      trimStats = res.stats;
-      warnings.push(
-        res.stats.torn
-          ? 'Trim skipped — too many lines meet at the same points for the trim to resolve reliably. Nudge the line width, the symmetry order or the radius slightly.'
-          : res.stats.splits
-            ? `Trim skipped — this figure self-crosses ${res.stats.splits.toLocaleString()} times, past the safe limit. Lower the symmetry order or the sample step.`
-            : `Trim skipped — ${res.stats.segments.toLocaleString()} segments exceeds the ${res.stats.limit.toLocaleString()} limit. Reduce tiling density or feature count.`,
-      );
+  /* 13b ▸ minimum web ---------------------------------------------------- */
+  if (fab.minWeb > 0 && allLoops.length && allLoops.length < 1500) {
+    let pts = 0;
+    for (const L of allLoops) pts += L.pts.length;
+    if (pts < 60000) {
+      const thin = minWebViolations(allLoops, fab.minWeb, Math.max(0.5, fab.minWeb / 2));
+      if (thin.length) {
+        warnings.push(`${thin.length} contour${thin.length === 1 ? ' has' : 's have'} features narrower than the ${fab.minWeb} mm minimum web — they may burn through or snap.`);
+      }
     }
   }
 
-  /* 12 ▸ metrics + 3D shape tree --------------------------------------- */
+  /* 14 ▸ metrics + 3D shape tree --------------------------------------- */
   const exportPaths = allLoops.concat(scoreLines);
   const metrics = computeMetrics(exportPaths, fab);
   const shapes = allLoops.length < 6000 ? buildShapeTree(allLoops) : [];
@@ -320,7 +385,7 @@ export function buildDesign(state) {
     depth,
     analysis,
     metrics,
-    fillRule: fab.trim && trimStats && trimStats.out !== undefined ? 'nonzero' : fillRule,
+    fillRule: clean ? 'nonzero' : fillRule,
     bridgeReport,
     trimStats,
     warnings,

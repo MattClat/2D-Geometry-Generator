@@ -100,8 +100,11 @@ for (const p of PRESETS) cases.push({ ...p, id: 'set:' + p.id });
 
 console.log('case                 rule      in →  out   raster-diff  crossings');
 for (const c of cases) {
-  const untrimmed = buildDesign({ ...c, fab: { ...c.fab, trim: false }, canvas: { W: 300, H: 300 } });
-  const trimmed = buildDesign({ ...c, fab: { ...c.fab, trim: true }, canvas: { W: 300, H: 300 } });
+  // Bridging and kerf run on the trimmed contours, so they would make the two
+  // sides differ by design. Compare the trim alone.
+  const base = { ...c.fab, autoBridge: false, kerf: 0 };
+  const untrimmed = buildDesign({ ...c, fab: { ...base, trim: false }, canvas: { W: 300, H: 300 } });
+  const trimmed = buildDesign({ ...c, fab: { ...base, trim: true }, canvas: { W: 300, H: 300 } });
   const rule = untrimmed.fillRule || 'nonzero';
   const bbox = untrimmed.bbox;
   const before = raster(untrimmed.loops, bbox, rule);

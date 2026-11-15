@@ -263,18 +263,24 @@ export function trimOverlaps(loops, opts = {}) {
   // safety guard below is expressed in those units.
   const epsQ = 1.0; // one quantisation unit, in integer space
   const maxSplits = opts.maxSplits ?? 900000;
+  // Wall-clock guard: a pathological arrangement can spend tens of seconds in
+  // pair tests before the split budget trips. Check the clock every few
+  // thousand pairs and give up early with the same fallback.
+  const maxMs = opts.maxMs ?? Infinity;
+  let pairTests = 0, timedOut = false;
   let overBudget = false;
   for (const [k, arr] of buckets) {
     const ci = Math.floor(k / 1000003), cj = k - ci * 1000003;
     const m = arr.length;
     for (let a = 0; a < m; a++) {
-      if (splitCount > maxSplits) { overBudget = true; break; }
+      if (overBudget || splitCount > maxSplits) { overBudget = true; break; }
       const s = arr[a];
       for (let b = a + 1; b < m; b++) {
         const t = arr[b];
         // owning cell = low corner of the overlap of the two cell ranges
         if ((ci0[s] > ci0[t] ? ci0[s] : ci0[t]) !== ci) continue;
         if ((cj0[s] > cj0[t] ? cj0[s] : cj0[t]) !== cj) continue;
+        if ((++pairTests & 8191) === 0 && now() - t0 > maxMs) { timedOut = true; overBudget = true; break; }
         intersectPair(s, t);
         nearTouch(s, t);
         nearTouch(t, s);
@@ -285,6 +291,9 @@ export function trimOverlaps(loops, opts = {}) {
   // A figure of a few hundred long mutually-crossing chords generates
   // hundreds of thousands of splits. Bail out rather than grind: the design
   // falls back to raw contours with a visible warning.
+  if (timedOut) {
+    return { loops: null, stats: { segments: nSeg, splits: splitCount, tooBig: true, timedOut: true, limit: maxSeg, ms: now() - t0 } };
+  }
   if (splitCount > maxSplits) {
     return { loops: null, stats: { segments: nSeg, splits: splitCount, tooBig: true, limit: maxSplits, ms: now() - t0 } };
   }
